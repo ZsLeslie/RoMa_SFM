@@ -42,10 +42,12 @@ def parse_args(argv=None):
     p.add_argument("--image-list", type=Path, help="Optional UTF-8 file, one relative image name per line")
     p.add_argument("--max-images", type=int, default=0, help="First N images in sorted order; 0 = all")
     p.add_argument("--model", choices=("aliked-t16", "aliked-n16", "aliked-n16rot", "aliked-n32"), default="aliked-n16")
-    p.add_argument("--max-keypoints", type=int, default=4096, help="Maximum points before mask filtering; never forces weak points")
+    p.add_argument("--max-keypoints", type=int, default=4096, help="Whole-image maximum; grid mode divides it among active cells without refilling")
     p.add_argument("--detection-threshold", type=float, default=0.2)
     p.add_argument("--nms-radius", type=int, default=2, help="ALIKED NMS radius at inference resolution")
     p.add_argument("--resize-max", type=int, default=1024, help="Downscale long edge only; 0 = original resolution")
+    p.add_argument("--grid-size", type=int, default=0, help="Square core size in ORIGINAL pixels; 0 = legacy whole-image extraction")
+    p.add_argument("--grid-margin", type=int, default=64, help="V1 compatibility argument; ignored by full-image grid V2")
     p.add_argument("--device", default="cuda", help="cuda, cuda:0, or cpu; no silent CPU fallback")
     p.add_argument("--num-threads", type=int, default=4)
     p.add_argument("--torch-hub-dir", type=Path, help="Offline weights: DIR/checkpoints/<model>.pth")
@@ -60,6 +62,8 @@ def parse_args(argv=None):
         p.error("detection-threshold must be in (0,1]; nms-radius must be >=1")
     if args.resize_max != 0 and args.resize_max < 32:
         p.error("resize-max must be 0 or >=32")
+    if args.grid_size < 0 or 0 < args.grid_size < 32 or args.grid_margin < 0:
+        p.error("grid-size must be 0 or >=32 original pixels; grid-margin must be >=0")
     if args.num_threads < 1 or not 1 <= args.mask_threshold <= 255:
         p.error("num-threads must be positive; mask-threshold must be in [1,255]")
     for name in ("images_dir", "output_dir", "image_list", "torch_hub_dir", "masks_dir"):
@@ -191,15 +195,37 @@ def extract_one(args, backend, name: str, mask_path: Path | None, set_id: str):
         features = load_features(args.output_dir, name, feature_set_id=set_id)
         if features.source_sha256 != source_hash or features.mask_sha256 != mask_hash:
             raise ValueError(f"Image or mask changed for {name!r}. Use a NEW output directory; cached IDs are immutable.")
-        return features, "cached"
-    size, points, scores, descriptors = backend.extract(image_bytes, save_descriptors=args.save_descriptors)
-    features = prepare_features(
-        image_name=name, image_size=size, keypoints=points, scores=scores, descriptors=descriptors,
-        source_sha256=source_hash, mask_sha256=mask_hash, feature_set_id=set_id,
-        detection_threshold=args.detection_threshold, max_keypoints=args.max_keypoints,
-        valid_mask=read_mask(mask_bytes, size, args.mask_threshold))
-    save_features(args.output_dir, features)
-    return features, "extracted"
+        status = "cached"
+    else:
+        extra = {}
+        if args.grid_size:
+            with Image.open(BytesIO(image_bytes)) as image:
+                size = image.size
+            # Validate the mask before any expensive model inference.
+            extra['valid_mask'] = read_mask(mask_bytes, size, args.mask_threshold)
+        size, points, scores, descriptors = backend.extract(image_bytes, save_descriptors=args.save_descriptors, **extra)
+        features = prepare_features(
+            image_name=name, image_size=size, keypoints=points, scores=scores, descriptors=descriptors,
+            source_sha256=source_hash, mask_sha256=mask_hash, feature_set_id=set_id,
+            detection_threshold=args.detection_threshold, max_keypoints=args.max_keypoints,
+            valid_mask=read_mask(mask_bytes, size, args.mask_threshold))
+        # Enforce/record quota invariants before publishing immutable features.
+        if args.grid_size:
+            backend.last_grid_stats = describe_grid(args, features, mask_bytes)
+        save_features(args.output_dir, features)
+        status = "extracted"
+    if args.grid_size and status == 'cached':
+        backend.last_grid_stats = describe_grid(args, features, mask_bytes)
+    return features, status
+
+
+def describe_grid(args, features, mask_bytes):
+    from .grid import grid_summary, make_grid
+    size = tuple(int(v) for v in features.image_size)
+    cells = make_grid(size, grid_size=args.grid_size, margin=0,
+                      max_keypoints=args.max_keypoints,
+                      valid_mask=read_mask(mask_bytes, size, args.mask_threshold))
+    return grid_summary(cells, features.keypoints)
 
 
 def write_index(root: Path, index: dict) -> None:
@@ -231,10 +257,11 @@ def run(args, *, backend_factory=None) -> int:
     if backend_factory is None:
         from .aliked import AlikedExtractor
         backend_factory = AlikedExtractor
+    extra = dict(grid_size=args.grid_size) if args.grid_size else {}
     backend = backend_factory(model_name=args.model, max_keypoints=args.max_keypoints,
                               detection_threshold=args.detection_threshold, nms_radius=args.nms_radius,
                               resize_max=args.resize_max, device=args.device,
-                              torch_hub_dir=args.torch_hub_dir, num_threads=args.num_threads)
+                              torch_hub_dir=args.torch_hub_dir, num_threads=args.num_threads, **extra)
     config = dict(schema_version=SCHEMA_VERSION, coordinates=COORDINATES,
                   images_dir=str(args.images_dir), masks_dir=str(args.masks_dir) if args.masks_dir else None,
                   mask_threshold=args.mask_threshold, save_descriptors=args.save_descriptors,
@@ -252,6 +279,8 @@ def run(args, *, backend_factory=None) -> int:
         run_status = "failed"
         try:
             LOG.info("Feature set %s; device=%s; coordinates=%s", set_id, args.device, COORDINATES)
+            if args.grid_size:
+                LOG.info('Grid V2: one full-image dense forward, masked spatial quotas; --grid-margin is ignored')
             for i, name in enumerate(names, 1):
                 t = perf_counter()
                 features, status = extract_one(args, backend, name, masks.get(name), set_id)
@@ -259,6 +288,10 @@ def run(args, *, backend_factory=None) -> int:
                 index["images"][name] = dict(feature_file=feature_path(args.output_dir, name).relative_to(args.output_dir).as_posix(),
                                             image_size=features.image_size.tolist(), keypoints=n, feature_id=features.feature_id,
                                             source_sha256=features.source_sha256, mask_sha256=features.mask_sha256)
+                if args.grid_size:
+                    stats = backend.last_grid_stats
+                    index['images'][name]['grid'] = stats
+                    LOG.info('Grid: cells=%d active=%d occupied=%d', stats['cells'], stats['active_cells'], stats['occupied_cells'])
                 counts[status] += 1
                 point_counts.append(n)
                 LOG.info("[%d/%d] %s | %s | keypoints=%d | %.3fs", i, len(names), name, status, n, perf_counter()-t)

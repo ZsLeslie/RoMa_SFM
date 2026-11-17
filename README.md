@@ -19,3 +19,5 @@ python -m unittest discover -s fixed_sfm/tests -v
 RoMa 匹配入口：`python -m fixed_sfm.match`，或进入 `fixed_sfm/` 后运行 `python match.py`。命令和格式见 [MATCHING.md](fixed_sfm/MATCHING.md)。
 
 COLMAP 导出入口：`python -m fixed_sfm.export_colmap`，或进入 `fixed_sfm/` 后运行 `python export_colmap.py`。导出、几何验证、mapper 的完整命令见 [COLMAP.md](fixed_sfm/COLMAP.md)。
+
+ALIKED 网格均匀提取 V2：增加 `--grid-size 256`，整图计算一次特征图/分数图后，在掩膜内按网格配额选点。说明见 [GRID.md](fixed_sfm/GRID.md)。`--grid-size 0` 保留原整图模式；`--grid-margin` 仅兼容旧命令，V2 已忽略。使用新的特征与匹配目录。
