@@ -1,15 +1,19 @@
 # RoMa 固定关键点匹配
 
-本阶段读取 ALIKED 的固定关键点库，输出两端原始关键点 ID 的对应关系。不重新采样关键点、不修改坐标、不合并或重新编号，也不依赖旧 `roma_sfm/src` 程序。
+本阶段读取 ALIKED 或 DeDoDe 的固定关键点库，输出两端原始关键点 ID 的对应关系。不重新采样关键点、不修改坐标、不合并或重新编号，也不依赖旧 `roma_sfm/src` 程序。
+
+检测器从 `--features-dir` 的元数据自动识别，无需另设匹配模型类型，也不重新加载 ALIKED/DeDoDe。匹配查询全部已保存点，不使用检测分数再次过滤；`--min-confidence` 始终针对 RoMa certainty。点库来源及完整提取设置写入匹配目录的 `feature_bank.json`，现有 ALIKED 匹配缓存身份规则保持不变。
+
+DeDoDe 运行示例与已完成的 12 张图、24 对匹配验证见 [DEDODE.md](DEDODE.md)。这 12 张图来自四个相距较远的局部拍摄段，使用明确的 `--pairs-file`，每组三张图内部全配对，不按子集名称顺序跨组配对。
 
 流程：两次顺序 RoMa 推理（A→B、B→A）→ 查询全部固定关键点 → 原图像素距离分配 → 双向 ID 一致性和前后向 warp 循环检查 → 固定坐标上的 MAGSAC F 验证 → 原子保存 NPZ。
 
 ## 运行
 
-在项目根目录和 `fixed_sfm` 子目录都可启动。以下以子目录为例，使用绝对路径避免输出位置随工作目录变化：
+在项目根目录和 `aliked_roma` 子目录都可启动。以下以子目录为例，使用绝对路径避免输出位置随工作目录变化：
 
 ```bash
-cd /home/nvidia/src/roma/fixed_sfm
+cd /home/nvidia/src/roma/aliked_roma
 source /home/nvidia/venvs/2dgs_env/bin/activate
 
 # 如果尚未建立关键点库，先提取三张图；已有库则直接复用。
@@ -34,7 +38,7 @@ python match.py \
   --max-pairs 3 --device cuda
 ```
 
-从项目根目录运行时，入口改为 `python -m fixed_sfm.match`，其他参数相同。ALIKED 可以用其他 `--output-dir`；匹配时将 `--features-dir` 指向那个实际目录。
+从项目根目录运行时，入口改为 `python -m aliked_roma.match`，其他参数相同。提取时可以用其他 `--output-dir`；匹配时将 `--features-dir` 指向那个实际目录。DeDoDe 点库和不同选点策略需要各自独立的匹配输出目录。
 
 默认在关键点库索引中的图像间按名称排序，使用连续配对 `--pairing-mode linear --overlap 5`。支持三种候选配对模式：
 
@@ -90,6 +94,7 @@ python match.py \
 ```text
 roma_matches/
   run_config.json          # 关键点库、模型权重/源码、过滤参数与 run_id
+  feature_bank.json        # 点库来源、检测器设置、检测分数与匹配分数的语义
   pairs_used.json          # 本次选择的规范方向配对，名称按字典序排列
   pairing_config.json      # 本次配对模式、overlap、实际索引间隔
   index.json              # 累积已完成配对索引及质量分类
@@ -113,8 +118,8 @@ roma_matches/
 
 ```python
 from pathlib import Path
-from fixed_sfm import load_features
-from fixed_sfm.match_store import load_matches
+from aliked_roma import load_features
+from aliked_roma.match_store import load_matches
 
 features = Path('/home/nvidia/src/roma/outputs/fixed_aliked')
 matches = Path('/home/nvidia/src/roma/outputs/roma_matches')
@@ -128,13 +133,13 @@ points0 = f0.keypoints[ids[:, 0]]  # 使用原始 ID 读取，不能对子集重
 points1 = f1.keypoints[ids[:, 1]]
 ```
 
-掩膜过滤已固定在 ALIKED 关键点库中，匹配阶段不重新过滤或编号。每次读取源图像都会检查内容哈希，确保 RoMa 看到的是提取关键点时的那份图像。
+掩膜过滤已固定在关键点库中，匹配阶段不重新过滤或编号。每次读取源图像都会检查内容哈希，确保 RoMa 看到的是提取关键点时的那份图像。
 
 重跑会检查配置、结果内容校验值和两端关键点身份，然后复用完整 NPZ，不重新加载模型推理。参数、权重、RoMa 源码或关键点内容变化时，必须使用新的匹配输出目录。中断后可恢复已经原子保存的配对；损坏或不兼容的缓存会报错，不会静默重算覆盖。空关键点库、少于 8 条对应或几何失败会保存空/无内点结果并标记 `insufficient_inliers`。
 
 `association_stats.json` 的统计范围仅是本次选择的配对，少量图像的双视图比例不能直接代表全量数据。它统计共享固定 ID 的情况，不证明关联一定属于同一个物理点。
 
-COLMAP 数据库导出已实现，入口为 `python -m fixed_sfm.export_colmap`，完整命令与格式见 [COLMAP.md](COLMAP.md)。保存的 F 内点掩码不能直接充当 COLMAP 的标定两视图几何；导出后仍需执行 COLMAP 的 E/F/H 验证，再进行 mapper。当前尚未实现全局轨迹冲突过滤。
+COLMAP 数据库导出已实现，入口为 `python -m aliked_roma.export_colmap`，完整命令与格式见 [COLMAP.md](COLMAP.md)。保存的 F 内点掩码不能直接充当 COLMAP 的标定两视图几何；导出后仍需执行 COLMAP 的 E/F/H 验证，再进行 mapper。当前尚未实现全局轨迹冲突过滤。
 
 实现参考：[RoMa 官方 matcher](https://github.com/Parskatt/RoMa/blob/main/romatch/models/matcher.py)。本程序采用原图像素最近邻和显式反向 warp 检查，因此没有直接使用默认归一化距离阈值的 `match_keypoints()`。
 
@@ -143,19 +148,19 @@ COLMAP 数据库导出已实现，入口为 `python -m fixed_sfm.export_colmap`�
 无需 GPU，直接读取已有关键点和匹配文件，不重新匹配或修改固定 ID：
 
 ```bash
-cd /home/nvidia/src/roma/fixed_sfm
+cd /home/nvidia/src/roma/aliked_roma
 python visualize.py \
   --features-dir /home/nvidia/src/roma/outputs/fixed_aliked \
   --matches-dir /home/nvidia/src/roma/outputs/roma_matches \
   --max-pairs 3 --max-lines 100
 ```
 
-项目根目录也可使用 `python -m fixed_sfm.visualize`。输出默认保存到匹配目录下的 `visualizations/`，可用 `--output-dir` 修改。
+项目根目录也可使用 `python -m aliked_roma.visualize`。输出默认保存到匹配目录下的 `visualizations/`，可用 `--output-dir` 修改。
 
 - `matches_overview.jpg`：最多六对的总览。每对内点按空间分布抽样，颜色表示 RoMa 置信度；红色显示 F 验证剔除的对应。
 - `pair_*.png`：各图像对的独立高清图。
 - `three_view_correspondences.png`：存在三图闭环时，显示一组空间分散的对应。同色同编号表示同一组三图对应，最多显示 `--max-tracks 24` 组。
-- `three_view_correspondences.csv`：所选三图中全部闭环对应及原始 ALIKED ID；图中的显示编号只是本表行号，不会改变关键点 ID。
+- `three_view_correspondences.csv`：所选三图中全部闭环对应及原始点库 ID；图中的显示编号只是本表行号，不会改变关键点 ID。
 - `visualization_manifest.json`：实际总数、抽样数及输出文件。
 
 可用 `--pair IMAGE0 IMAGE1` 指定某一对。图中连线经过抽样，不能据显示线数推断全部匹配数量；总数在标题和清单中给出。

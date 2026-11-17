@@ -1,6 +1,6 @@
-"""Extract an immutable ALIKED feature bank, once per image.
+"""Extract an immutable ALIKED or DeDoDe detector bank, once per image.
 
-Run from the project root: python -m fixed_sfm.extract --help
+Run from the project root: python -m aliked_roma.extract --help
 Or from this directory: python extract.py --help
 """
 from __future__ import annotations
@@ -26,7 +26,7 @@ from PIL import Image
 # both the feature imports below and the lazy ALIKED import inside run().
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-    __package__ = "fixed_sfm"
+    __package__ = Path(__file__).resolve().parent.name
 
 from .features import (COORDINATES, SCHEMA_VERSION, check_name, digest_json,
                        feature_path, load_features, prepare_features, save_features)
@@ -38,39 +38,54 @@ LOG = logging.getLogger("fixed_sfm.extract")
 def parse_args(argv=None):
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--images-dir", required=True, type=Path)
-    p.add_argument("--output-dir", type=Path, help="Default: sibling directory fixed_aliked")
+    p.add_argument("--output-dir", type=Path, help="Default: sibling directory fixed_<extractor>")
     p.add_argument("--image-list", type=Path, help="Optional UTF-8 file, one relative image name per line")
     p.add_argument("--max-images", type=int, default=0, help="First N images in sorted order; 0 = all")
-    p.add_argument("--model", choices=("aliked-t16", "aliked-n16", "aliked-n16rot", "aliked-n32"), default="aliked-n16")
+    p.add_argument("--extractor", choices=("aliked", "dedode"), default="aliked")
+    p.add_argument("--model", choices=("aliked-t16", "aliked-n16", "aliked-n16rot", "aliked-n32", "dedode-L-v2"))
     p.add_argument("--max-keypoints", type=int, default=4096, help="Whole-image maximum; grid mode divides it among active cells without refilling")
-    p.add_argument("--detection-threshold", type=float, default=0.2)
-    p.add_argument("--nms-radius", type=int, default=2, help="ALIKED NMS radius at inference resolution")
+    p.add_argument("--detection-threshold", type=float, help="ALIKED default: 0.2; DeDoDe default: 0 (native top-K scores)")
+    p.add_argument("--nms-radius", type=int, help="ALIKED default: 2; DeDoDe supports 0 only (native sampling)")
     p.add_argument("--resize-max", type=int, default=1024, help="Downscale long edge only; 0 = original resolution")
     p.add_argument("--grid-size", type=int, default=0, help="Square core size in ORIGINAL pixels; 0 = legacy whole-image extraction")
     p.add_argument("--grid-margin", type=int, default=64, help="V1 compatibility argument; ignored by full-image grid V2")
     p.add_argument("--device", default="cuda", help="cuda, cuda:0, or cpu; no silent CPU fallback")
     p.add_argument("--num-threads", type=int, default=4)
     p.add_argument("--torch-hub-dir", type=Path, help="Offline weights: DIR/checkpoints/<model>.pth")
+    p.add_argument("--dedode-weights", type=Path, default=Path(__file__).resolve().parents[1]/"models/dedode_detector_L_v2.pth",
+                   help="Local DeDoDe v2-L detector checkpoint; never downloads weights")
     p.add_argument("--save-descriptors", action="store_true", help="Also save float32 ALIKED descriptors (not needed by RoMa)")
     p.add_argument("--masks-dir", type=Path, help="Optional masks: black=exclude, white=keep; all selected images must have one")
     p.add_argument("--mask-threshold", type=int, default=128)
     p.add_argument("--dry-run", action="store_true", help="List inputs without importing torch or writing files")
     args = p.parse_args(argv)
+    if args.model is None:
+        args.model = "dedode-L-v2" if args.extractor == "dedode" else "aliked-n16"
+    if (args.model == "dedode-L-v2") != (args.extractor == "dedode"):
+        p.error("--model must belong to the selected --extractor")
+    if args.detection_threshold is None:
+        args.detection_threshold = 0.0 if args.extractor == "dedode" else 0.2
+    if args.nms_radius is None:
+        args.nms_radius = 0 if args.extractor == "dedode" else 2
+    if args.extractor == "dedode" and (args.save_descriptors or args.nms_radius != 0):
+        p.error("DeDoDe supports detector-only extraction with --nms-radius 0; descriptors are not loaded")
     if args.max_images < 0 or not 0 < args.max_keypoints <= 20000:
         p.error("max-images must be >=0; max-keypoints must be in [1,20000]")
-    if not 0 < args.detection_threshold <= 1 or args.nms_radius < 1:
-        p.error("detection-threshold must be in (0,1]; nms-radius must be >=1")
+    if not 0 <= args.detection_threshold <= 1:
+        p.error("detection-threshold must be in [0,1]")
+    if args.extractor == "aliked" and (args.detection_threshold == 0 or args.nms_radius < 1):
+        p.error("ALIKED requires detection-threshold >0 and nms-radius >=1")
     if args.resize_max != 0 and args.resize_max < 32:
         p.error("resize-max must be 0 or >=32")
     if args.grid_size < 0 or 0 < args.grid_size < 32 or args.grid_margin < 0:
         p.error("grid-size must be 0 or >=32 original pixels; grid-margin must be >=0")
     if args.num_threads < 1 or not 1 <= args.mask_threshold <= 255:
         p.error("num-threads must be positive; mask-threshold must be in [1,255]")
-    for name in ("images_dir", "output_dir", "image_list", "torch_hub_dir", "masks_dir"):
+    for name in ("images_dir", "output_dir", "image_list", "torch_hub_dir", "masks_dir", "dedode_weights"):
         if getattr(args, name) is not None:
             setattr(args, name, getattr(args, name).expanduser().resolve())
     if args.output_dir is None:
-        args.output_dir = args.images_dir.parent / "fixed_aliked"
+        args.output_dir = args.images_dir.parent / f"fixed_{args.extractor}"
     if args.output_dir.is_relative_to(args.images_dir):
         p.error("output-dir must be outside images-dir to avoid treating output images as new input")
     if args.masks_dir is not None and args.masks_dir.is_relative_to(args.images_dir):
@@ -198,7 +213,7 @@ def extract_one(args, backend, name: str, mask_path: Path | None, set_id: str):
         status = "cached"
     else:
         extra = {}
-        if args.grid_size:
+        if args.grid_size or args.extractor == 'dedode':
             with Image.open(BytesIO(image_bytes)) as image:
                 size = image.size
             # Validate the mask before any expensive model inference.
@@ -255,9 +270,15 @@ def run(args, *, backend_factory=None) -> int:
             print(f"... {len(names)-12} more")
         return 0
     if backend_factory is None:
-        from .aliked import AlikedExtractor
-        backend_factory = AlikedExtractor
+        if args.extractor == 'dedode':
+            from .dedode import DeDoDeExtractor
+            backend_factory = DeDoDeExtractor
+        else:
+            from .aliked import AlikedExtractor
+            backend_factory = AlikedExtractor
     extra = dict(grid_size=args.grid_size) if args.grid_size else {}
+    if args.extractor == 'dedode':
+        extra['weights_path'] = args.dedode_weights
     backend = backend_factory(model_name=args.model, max_keypoints=args.max_keypoints,
                               detection_threshold=args.detection_threshold, nms_radius=args.nms_radius,
                               resize_max=args.resize_max, device=args.device,
@@ -280,7 +301,7 @@ def run(args, *, backend_factory=None) -> int:
         try:
             LOG.info("Feature set %s; device=%s; coordinates=%s", set_id, args.device, COORDINATES)
             if args.grid_size:
-                LOG.info('Grid V2: one full-image dense forward, masked spatial quotas; --grid-margin is ignored')
+                LOG.info('One full-image dense forward with masked spatial quotas; --grid-margin is ignored')
             for i, name in enumerate(names, 1):
                 t = perf_counter()
                 features, status = extract_one(args, backend, name, masks.get(name), set_id)

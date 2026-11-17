@@ -1,5 +1,7 @@
 # ALIKED 固定关键点：独立实现的第一阶段
 
+新增 DeDoDe v2-L 固定点提取，使用 `python -m aliked_roma.extract --extractor dedode`。实际目录已更名为 `aliked_roma`；下文旧命令中的 `fixed_sfm` 应相应替换。DeDoDe 离线运行及叶片样本对照见 [DEDODE.md](DEDODE.md)。
+
 本项目位于 `/home/nvidia/src/roma`，独立于 `/home/nvidia/src/roma_sfm` 中的旧程序，不导入、不修改旧匹配代码。后续开发均在本项目目录进行。本阶段为每张图建立一份固定关键点库；后续 RoMa 匹配必须引用这份库中的 ID。RoMa 固定 ID 匹配已实现，见 [MATCHING.md](MATCHING.md)；COLMAP 数据库导出、原生几何验证与建图命令见 [COLMAP.md](COLMAP.md)。全局轨迹冲突过滤尚未实现。
 
 每张图只提取一次。ID 是最终 NPZ 的行号，从 0 开始；所有配对共用这份索引。参数、权重、图像或掩膜变化时，必须建立新的输出目录。本程序没有覆盖旧关键点的选项。

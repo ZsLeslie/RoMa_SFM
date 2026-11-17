@@ -1,6 +1,6 @@
-"""Match fixed ALIKED keypoints with RoMa, preserving original row IDs.
+"""Match fixed ALIKED or DeDoDe keypoints with RoMa, preserving row IDs.
 
-Project root: python -m fixed_sfm.match --help
+Project root: python -m aliked_roma.match --help
 Script directory: python match.py --help
 """
 from __future__ import annotations
@@ -19,7 +19,7 @@ import numpy as np
 
 if __package__ in (None, ''):
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-    __package__ = 'fixed_sfm'
+    __package__ = Path(__file__).resolve().parent.name
 
 from .features import COORDINATES, SCHEMA_VERSION, digest_json, load_features
 from .extract import atomic_json, output_lock, source_path
@@ -31,7 +31,8 @@ LOG = logging.getLogger('fixed_sfm.match')
 
 def parse_args(argv=None):
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument('--features-dir', type=Path, required=True, help='Immutable ALIKED bank from extract.py')
+    p.add_argument('--features-dir', type=Path, required=True,
+                   help='Immutable ALIKED or DeDoDe bank from extract.py; detector is read from bank metadata')
     p.add_argument('--images-dir', type=Path, help='Default: image root recorded in the feature bank')
     p.add_argument('--output-dir', type=Path, required=True)
     p.add_argument('--pairs-file', type=Path, help='Two image names per line; otherwise sequential pairs from the feature index')
@@ -85,6 +86,7 @@ def parse_args(argv=None):
 class FeatureBank:
     """Validate exact bank identities; bound the decompressed feature cache."""
     def __init__(self, root):
+        root = Path(root)
         self.root, self.cache = root, OrderedDict()
         config_path, index_path = root/'run_config.json', root/'index.json'
         if not config_path.is_file() or not index_path.is_file():
@@ -98,6 +100,20 @@ class FeatureBank:
                 or self.config['config'].get('coordinates') != COORDINATES or not isinstance(index.get('images'), dict)):
             raise ValueError('Feature index/configuration disagree')
         self.rows = index['images']
+
+    @property
+    def detector(self):
+        """Describe the producer, without using its scores to filter matches.
+
+        ALIKED stores model settings as a dict; DeDoDe stores a model name.
+        Both are already bound by feature_set_id. Keeping this derived label
+        outside the matching config preserves existing ALIKED cache identities.
+        """
+        signature = self.config['config'].get('extractor', {})
+        model = signature.get('model', 'unknown')
+        if isinstance(model, dict):
+            model = model.get('model_name', 'unknown')
+        return dict(implementation=signature.get('extractor', 'unknown'), model=model)
 
     def get(self, name):
         if name not in self.rows:
@@ -165,7 +181,7 @@ def collect_pairs(names, pairs_file=None, overlap=5, max_pairs=0, pairing_mode='
 def verified_image_bytes(root, bank):
     data = source_path(root, bank.image_name).read_bytes()
     if sha256(data).hexdigest() != bank.source_sha256:
-        raise ValueError(f'Source image changed since ALIKED extraction: {bank.image_name}. Build a new feature bank first.')
+        raise ValueError(f'Source image changed since feature extraction: {bank.image_name}. Build a new feature bank first.')
     return data
 
 
@@ -279,7 +295,9 @@ def run(args, *, backend_factory=None, verifier=None):
                      offsets=sequential_offsets(len(banks.rows), args.overlap, args.pairing_mode) if not args.pairs_file else None,
                      pairs_file=str(args.pairs_file) if args.pairs_file else None,
                      max_pairs=args.max_pairs, selected_pairs=len(pairs))
-    print(f'Pairs: {len(pairs)} | pairing: {selection["mode"]} | feature set: {banks.set_id} | output: {args.output_dir}', flush=True)
+    detector = banks.detector
+    print(f'Pairs: {len(pairs)} | pairing: {selection["mode"]} | detector: {detector["implementation"]}/{detector["model"]}'
+          f' | feature set: {banks.set_id} | output: {args.output_dir}', flush=True)
     if selection['offsets'] is not None:
         print(f'Index offsets (clipped to bank size): {selection["offsets"]}', flush=True)
     if args.dry_run:
@@ -307,6 +325,13 @@ def run(args, *, backend_factory=None, verifier=None):
         matching_code_sha256=sha256(Path(__file__).with_name('matching.py').read_bytes()).hexdigest())
     with output_lock(args.output_dir):
         run_id, index = prepare_output(args.output_dir, config)
+        atomic_json(args.output_dir/'feature_bank.json', dict(
+            features_dir=str(args.features_dir), feature_set_id=banks.set_id,
+            coordinates=COORDINATES, detector=detector,
+            extraction_config=banks.config['config'].get('extractor', {}),
+            detection_scores_used_for_matching=False,
+            match_scores='minimum_RoMa_certainty_along_forward_and_return_paths',
+            keypoint_ids='original_saved_row_indices'))
         atomic_json(args.output_dir/'pairs_used.json', [list(p) for p in pairs])
         # Pair selection changes only which results are requested, not the
         # algorithm for a given pair. Keep it outside immutable run_config so
@@ -320,6 +345,8 @@ def run(args, *, backend_factory=None, verifier=None):
             LOG.addHandler(h)
         status, started, counts = 'failed', perf_counter(), dict(matched=0, cached=0)
         try:
+            LOG.info('Fixed bank: %s/%s; querying all saved rows; confidence threshold applies to RoMa certainty only',
+                     detector['implementation'], detector['model'])
             for i, names in enumerate(pairs, 1):
                 t = perf_counter()
                 result, state = process_pair(args, backend, banks, names, run_id, verifier)

@@ -1,7 +1,7 @@
 """Plot fixed-ID pair matches and one available three-view closed association.
 
-python -m fixed_sfm.visualize --features-dir BANK --matches-dir MATCHES
-Or run python visualize.py from the fixed_sfm directory. No torch/GPU needed.
+python -m aliked_roma.visualize --features-dir BANK --matches-dir MATCHES
+Or run python visualize.py from the aliked_roma directory. No torch/GPU needed.
 """
 from __future__ import annotations
 
@@ -20,7 +20,7 @@ from PIL import Image
 
 if __package__ in (None, ''):
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-    __package__ = 'fixed_sfm'
+    __package__ = Path(__file__).resolve().parent.name
 
 from .extract import source_path
 from .match import FeatureBank

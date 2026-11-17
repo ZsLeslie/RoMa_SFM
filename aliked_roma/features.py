@@ -48,7 +48,7 @@ class ImageFeatures:
     image_size: np.ndarray          # int64 [width, height]
     keypoint_ids: np.ndarray        # uint32 [N], exactly 0..N-1
     keypoints: np.ndarray           # float32 [N,2], COLMAP coordinates
-    scores: np.ndarray              # float32 [N], ALIKED detection scores
+    scores: np.ndarray              # float32 [N], extractor-specific scores
     descriptors: np.ndarray | None  # optional float32 [N,D]
     source_sha256: str
     mask_sha256: str                # empty when masks are disabled
@@ -70,7 +70,7 @@ class ImageFeatures:
         if ((self.keypoints < 0) | (self.keypoints >= self.image_size)).any():
             raise ValueError("Keypoints must lie inside the original image")
         if ((self.scores < 0) | (self.scores > 1)).any():
-            raise ValueError("ALIKED scores must be within [0,1]")
+            raise ValueError("Detection scores must be within [0,1]")
         if self.descriptors is not None:
             d = self.descriptors
             if d.dtype != np.float32 or d.ndim != 2 or d.shape[0] != n or d.shape[1] <= 0 or not np.isfinite(d).all():
@@ -112,7 +112,7 @@ def prepare_features(*, image_name: str, image_size: tuple[int, int],
                      mask_sha256: str, feature_set_id: str,
                      detection_threshold: float, max_keypoints: int,
                      valid_mask: np.ndarray | None = None) -> ImageFeatures:
-    """Convert ALIKED's original-image, zero-centered coordinates once.
+    """Convert adapters' original-image, zero-centered coordinates once.
 
     IDs are assigned only AFTER filtering and deterministic score/y/x sorting.
     ALIKED internally falls back to a mean threshold on low-texture images;
@@ -121,11 +121,11 @@ def prepare_features(*, image_name: str, image_size: tuple[int, int],
     points = np.asarray(keypoints, dtype=np.float32)
     scores = np.asarray(scores, dtype=np.float32)
     if points.ndim != 2 or points.shape[1] != 2 or scores.shape != (len(points),):
-        raise ValueError("Unexpected ALIKED keypoint/score shapes")
+        raise ValueError("Unexpected detector keypoint/score shapes")
     if descriptors is not None:
         descriptors = np.asarray(descriptors, dtype=np.float32)
         if descriptors.ndim != 2 or descriptors.shape[0] != len(points):
-            raise ValueError("Unexpected ALIKED descriptor shape")
+            raise ValueError("Unexpected detector descriptor shape")
     size = np.asarray(image_size, dtype=np.int64)
     if size.shape != (2,) or (size <= 0).any():
         raise ValueError("Invalid original image dimensions")
