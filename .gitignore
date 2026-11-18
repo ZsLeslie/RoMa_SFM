@@ -9,3 +9,5 @@ logs/
 *.sh
 models/
 validation/
+
+*.out

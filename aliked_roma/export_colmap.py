@@ -1,7 +1,7 @@
 """Export immutable ALIKED keypoints and RoMa row-ID matches to COLMAP 4.x.
 
-python -m fixed_sfm.export_colmap --help
-python export_colmap.py --help  (from fixed_sfm/)
+python -m aliked_roma.export_colmap --help
+python export_colmap.py --help  (from aliked_roma/)
 
 The new output directory is published only after validation succeeds. Raw
 matches require COLMAP geometric_verifier before mapper; the initial RoMa F
@@ -29,14 +29,14 @@ from PIL import Image
 
 if __package__ in (None, ''):
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-    __package__ = 'fixed_sfm'
+    __package__ = 'aliked_roma'
 
 from .extract import atomic_json, source_path
 from .features import COORDINATES, check_name, digest_json
 from .match import FeatureBank
 from .match_store import MATCH_SCHEMA, canonical_pair, load_matches, match_path, pair_id
 
-LOG = logging.getLogger('fixed_sfm.export_colmap')
+LOG = logging.getLogger('aliked_roma.export_colmap')
 MAX_IMAGE_ID = 2147483647
 
 
@@ -255,7 +255,7 @@ def audit_database(path, expected):
 
 @contextmanager
 def export_lock(parent):
-    with (parent/'.fixed_sfm_export.lock').open('a') as f:
+    with (parent/'.aliked_roma_export.lock').open('a') as f:
         try:
             fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as exc:

@@ -1,6 +1,6 @@
 """Extract an immutable ALIKED feature bank, once per image.
 
-Run from the project root: python -m fixed_sfm.extract --help
+Run from the project root: python -m aliked_roma.extract --help
 Or from this directory: python extract.py --help
 """
 from __future__ import annotations
@@ -26,13 +26,13 @@ from PIL import Image
 # both the feature imports below and the lazy ALIKED import inside run().
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-    __package__ = "fixed_sfm"
+    __package__ = "aliked_roma"
 
 from .features import (COORDINATES, SCHEMA_VERSION, check_name, digest_json,
                        feature_path, load_features, prepare_features, save_features)
 
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp"}
-LOG = logging.getLogger("fixed_sfm.extract")
+LOG = logging.getLogger("aliked_roma.extract")
 
 
 def parse_args(argv=None):

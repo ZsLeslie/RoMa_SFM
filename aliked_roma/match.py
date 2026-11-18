@@ -1,6 +1,6 @@
 """Match fixed ALIKED keypoints with RoMa, preserving original row IDs.
 
-Project root: python -m fixed_sfm.match --help
+Project root: python -m aliked_roma.match --help
 Script directory: python match.py --help
 """
 from __future__ import annotations
@@ -19,14 +19,14 @@ import numpy as np
 
 if __package__ in (None, ''):
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-    __package__ = 'fixed_sfm'
+    __package__ = 'aliked_roma'
 
 from .features import COORDINATES, SCHEMA_VERSION, digest_json, load_features
 from .extract import atomic_json, output_lock, source_path
 from .matching import associate, verify_fundamental
 from .match_store import MATCH_SCHEMA, PairMatches, canonical_pair, load_matches, match_path, pair_id, save_matches
 
-LOG = logging.getLogger('fixed_sfm.match')
+LOG = logging.getLogger('aliked_roma.match')
 
 
 def parse_args(argv=None):
